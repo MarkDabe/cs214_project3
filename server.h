@@ -20,16 +20,19 @@
 pthread_t TIDS[256] = {0};
 int COUNTER = 0;
 
-pthread_mutex_t mutex;
+
 sem_t semphore;
+pthread_mutex_t mutex;
 
 typedef struct _account{
+
 
     char* name;
     int accounts_number;
     double balance;
     short  in_session;
-    struct account* next;
+    pthread_mutex_t* mutex;
+    struct _account* next;
 
 }account;
 

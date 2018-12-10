@@ -1,43 +1,238 @@
 #include "server.h"
 
 
+account ** global_head = NULL;
+
+account * find_account(account* head ,char* account_name){
+
+    account* ptr =  head ->next;
+
+    while(ptr != NULL){
+
+        if(strcmp(ptr->name, account_name) == 0){
+            break;
+        }
+        ptr = ptr->next;
+
+    }
+
+    return ptr;
+}
+
+account* add_account(account* head ,char* account_name){
+
+    account* ptr = head;
+
+    while(ptr->next != NULL){
+        ptr =  ptr->next;
+
+    }
+
+    ptr->next = (account*) malloc(sizeof(account));
+
+    ptr->next->name = (char*) malloc(strlen(account_name)+1);
+    strncpy(ptr->next->name, account_name, strlen(account_name) + 1);
+    ptr->next->balance = 0;
+    ptr->next->mutex = (pthread_mutex_t *) malloc(sizeof(pthread_mutex_t));
+
+    pthread_mutex_init(ptr->next->mutex , NULL);
+
+    ptr->next->next = NULL;
+
+    return head;
+}
+
+void delete_list(account* head){
+    account* ptr = head;
+    account* temp = NULL;
+    while (ptr != NULL){
+        temp = ptr;
+        pthread_mutex_destroy(temp->mutex);
+        free(temp->mutex);
+        free(temp->name);
+        free(temp);
+        ptr = ptr->next;
+
+    }
+}
+
+
 void * session_handler(void * args){
 
 
     session_handler_args* session_args = (session_handler_args*) args;
 
-    printf("created thread\n");
 
+    char * commands[5] = {"create", "serve", "deposit", "withdraw", "query"};
 
     char buffer[1024] = {0};
 
+    int i = -1;
+
     while (1){
+
         read(session_args->socket, buffer, 1024);
 
-        printf(buffer);
+        char* token = strtok(buffer, " ");
 
-        if(strcmp(buffer, "exit") == 0){
-            printf("%s\n", buffer);
-            send(session_args->socket, "session terminated", strlen("session terminated"), 0);
-            break;
+        if (i == 0){
+            if(strcmp(token, "end") == 0){
+                send(session_args->socket, "session terminated",
+                     strlen("session terminated") + 1, 0);
+                pthread_exit(NULL);
+            }else if(strcmp(token, "quit") == 0){
+                send(session_args->socket, "client disconnected",
+                     strlen("client disconnected") + 1, 0);
+                pthread_exit(NULL);
+            }else{
+                send(session_args->socket, "end session after adding an account",
+                     strlen("end session after adding an account") + 1, 0);
+                continue;
+
+            }
+
         }
 
-        send(session_args->socket, "hello", strlen("hello"), 0);
+        for(i = 0; i < 5; i++){
+
+            if(strcmp(token, commands[i]) == 0){
+                break;
+            }
+
+        }
+
+        if(i >= 5){
+            send(session_args->socket, "session terminated", strlen("session terminated") +1, 0);
+            pthread_exit(NULL);
+        }else if (i == 0){
+            token = strtok(NULL, " ");
+            if( find_account(session_args->head, token) == NULL){
+                if (add_account(session_args->head, token) != NULL ) {
+                    send(session_args->socket, "account added", strlen("account added") + 1, 0);
+                    continue;
+                }else{
+                    send(session_args->socket, "error adding account", strlen("error adding account") + 1, 0);
+                    continue;
+                }
+
+            }
+
+        }else if(i == 1){
+            token = strtok(NULL, " ");
+
+            account* session_account = find_account(session_args->head, token);
+
+            if(session_account != NULL){
+                if(session_account->in_session == 1){
+                    send(session_args->socket, "account already in session", strlen("account already in session") + 1, 0);
+                    pthread_exit(NULL);
+                }
+
+                pthread_mutex_lock(session_account->mutex);
+                session_account->in_session = 1;
+                send(session_args->socket, "account found", strlen("account found") + 1, 0);
+                while (1){
+
+                    read(session_args->socket, buffer, 1024);
+
+                    token = strtok(buffer, " ");
+
+                    if(token == NULL){
+                        printf("NULL TOKEN\n");
+                        continue;
+                    }
+
+                    for(i = 0; i < 5; i++){
+
+                        if(strcmp(token, commands[i]) == 0){
+                            break;
+                        }
+
+                    }
+
+
+                    if(i == 2){
+
+
+
+                        token = strtok(NULL, " ");
+
+                        double amount = 0;
+
+                        sscanf(token, "%lf", &amount);
+
+
+                        session_account->balance = session_account->balance + amount;
+
+                        send(session_args->socket, "deposit success", strlen("deposit success") + 1, 0);
+
+
+                        continue;
+
+
+                    }else if(i == 3){
+
+                        token = strtok(NULL, " ");
+
+                        double amount = 0;
+
+                        sscanf(token, "%lf", &amount);
+
+                        session_account->balance = session_account->balance - amount;
+
+                        send(session_args->socket, "withdraw success", strlen("withdraw success") + 1, 0);
+
+                        continue;
+
+                    }else if(i == 4){
+
+
+
+                        char balance[256] = {0};
+
+                        sprintf(balance, "balance: %lf", session_account->balance);
+
+                        send(session_args->socket, balance, strlen(balance) + 1, 0);
+
+                        continue;
+
+
+                    } else if(i >=5){
+                        send(session_args->socket, "session terminated", strlen("session terminated") +1, 0);
+                        session_account->in_session = 0;
+                        pthread_mutex_unlock(session_account->mutex);
+                        pthread_exit(NULL);
+                    }
+
+
+
+
+                }
+
+            }else{
+                send(session_args->socket, "account not found", strlen("account not fount") + 1, 0);
+                continue;
+
+            }
+        }
+
+
 
     }
 
-
-
-    pthread_exit(NULL);
 }
 
 
 void print_accounts(int signum)
 {
-
     sem_post(&semphore);
     sem_wait(&semphore);
-    printf("accounts\n");
+    account* ptr = *global_head;
+
+    while(ptr!= NULL){
+        printf("%s\n", ptr->name);
+        ptr = ptr->next;
+    }
 
 }
 
@@ -53,9 +248,9 @@ int main(int argc, char const *argv[])
     sa.sa_handler = &print_accounts ;
     sigaction (SIGALRM, &sa, NULL );
 
-    timer.it_value.tv_sec = 15 ;
+    timer.it_value.tv_sec = 1 ;
     timer.it_value.tv_usec = 0;
-    timer.it_interval.tv_sec = 15;
+    timer.it_interval.tv_sec = 1;
     timer.it_interval.tv_usec = 0 ;
 
     setitimer(ITIMER_REAL, &timer, NULL) ;
@@ -108,136 +303,39 @@ int main(int argc, char const *argv[])
         perror("listen");
     }
 
-    account* head = (account*) malloc(sizeof(account));
-    head -> name = "linked_list_head";
-    head -> accounts_number = 0;
+
+
+    session_handler_args *args = (session_handler_args *) malloc(sizeof(session_handler_args));
+    args->head = (account*) malloc(sizeof(account));
+    args->head -> name = (char*) malloc(sizeof("linked_list_head") + 1);
+    strncpy(args -> head -> name, "linked_list_head", strlen("linked_list_head") + 1);
+    args -> head -> balance = -1;
+    args -> head -> mutex = NULL;
+    args -> head -> accounts_number = 0;
+    args -> head -> in_session = -1 ;
+    args -> head -> next = NULL;
+
+
+    global_head = (account**) malloc(sizeof(account**));
+    memcpy(global_head, &args->head, sizeof(account*));
+
 
     while(1) {
         if ((new_socket = accept(server_fd, (struct sockaddr *) &address,
                                  (socklen_t *) &addrlen)) < 0) {
-            perror("accept");
         }else {
 
-            session_handler_args *args = (session_handler_args *) malloc(sizeof(session_handler_args));
-
             args->socket = new_socket;
-            args->head = head;
 
             pthread_create(&TIDS[COUNTER], NULL, session_handler, args);
             COUNTER++;
 
+
         }
 
-//        read(new_socket, buffer, 1024);
-//
-//        if(strcmp(buffer, "exit") == 0){
-//            printf("%s\n", buffer);
-//            send(new_socket, "bye", strlen("bye"), 0);
-//            break;
-//        }
-//        send(new_socket, "hello", strlen("hello"), 0);
     }
     pthread_mutex_destroy(&mutex);
     sem_destroy(&semphore);
     return 0;
 }
 
-
-//#include <fcntl.h>
-//#include <stdio.h>
-//#include <sys/stat.h>
-//#include <unistd.h>
-//#include <string.h>
-//#include <sys/socket.h>
-//#include <stdlib.h>
-//#include <string.h>
-//#include <arpa/inet.h>
-//#include <sys/ioctl.h>
-//#include <errno.h>
-//#include <pthread.h>
-//#include <signal.h>
-//#include <sys/time.h>
-//#include <semaphore.h>
-//
-//sem_t mutex;
-//
-//void* thread_1(void* arg)
-//{
-//
-//    sem_wait(&mutex);
-//    int* t_1 = (int*) arg;
-//    printf("\nEntered..%d\n", *t_1);
-//    sleep(5);
-//    printf("\nJust Exiting...%d\n", *t_1);
-//    sem_post(&mutex);
-//    return NULL;
-//}
-//
-//void* thread_2(void* arg)
-//{
-//
-//    sem_wait(&mutex);
-//    int* t_1 = (int*) arg;
-//    printf("\nEntered..%d\n", *t_1);
-//    sleep(15);
-//    printf("\nJust Exiting...%d\n", *t_1);
-//    sem_post(&mutex);
-//    return NULL;
-//}
-//
-//
-//void* thread_3(void* arg)
-//{
-//
-//    sem_wait(&mutex);
-//    int* t_3 = (int*) arg;
-//    printf("\nEntered..%d\n", *t_3);
-//    sleep(30);
-//    printf("\nJust Exiting...%d\n", *t_3);
-//    sem_post(&mutex);
-//    return NULL;
-//}
-//
-//
-//void interrupt(int signum)
-//{
-//    sem_post(&mutex);
-//    sem_wait(&mutex);
-//    printf("\ninterrupt\n");
-//
-//
-//
-//}
-//
-//
-//
-//int main()
-//{
-//    struct sigaction sa;
-//    struct itimerval timer ;
-//
-//    memset ( &sa, 0, sizeof ( sa ) ) ;
-//
-//    sa.sa_handler = &interrupt ;
-//    sigaction (SIGALRM, &sa, NULL );
-//
-//    timer.it_value.tv_sec = 1 ;
-//    timer.it_value.tv_usec = 0;
-//    timer.it_interval.tv_sec = 1;
-//    timer.it_interval.tv_usec = 0 ;
-//
-//    setitimer(ITIMER_REAL, &timer, NULL) ;
-//    int t_1 = 1;
-//    int t_2 = 2;
-//    int t_3 = 3;
-//    sem_init(&mutex, 0, 1);
-//    pthread_t t1, t2, t3;
-//    pthread_create(&t1,NULL,thread_1,&t_1);
-//    pthread_create(&t2,NULL,thread_2,&t_2);
-//    pthread_create(&t3,NULL,thread_3,&t_3);
-//    pthread_join(t1,NULL);
-//    pthread_join(t2, NULL);
-//    pthread_join(t3, NULL);
-//    sem_destroy(&mutex);
-//    return 0;
-//}
